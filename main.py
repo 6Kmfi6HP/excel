@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment
+import re
 
 def clean_phone_number(phone: str) -> str:
     """清理并格式化电话号码"""
@@ -14,7 +15,18 @@ def clean_phone_number(phone: str) -> str:
     # 添加+号前缀
     return "+" + phone if not phone.startswith('+') else phone
 
-def process_excel_file(file_path: str) -> pd.DataFrame:
+def extract_price(product_info: str) -> float:
+    """从产品信息中提取价格"""
+    try:
+        # 查找价格模式：$数字.数字
+        price_match = re.search(r'\$(\d+\.?\d*)', product_info)
+        if price_match:
+            return float(price_match.group(1))
+        return 0.0
+    except Exception:
+        return 0.0
+
+def process_excel_file(file_path: str, min_price: float = None, max_price: float = None) -> pd.DataFrame:
     """处理单个Excel文件"""
     print(f"\n处理文件: {file_path}")
     try:
@@ -23,6 +35,16 @@ def process_excel_file(file_path: str) -> pd.DataFrame:
 
         for index, row in df.iterrows():
             try:
+                # 提取价格信息
+                product_info = str(row.get('产品信息', ''))
+                price = extract_price(product_info)
+                
+                # 如果设置了价格过滤条件，检查是否符合条件
+                if min_price is not None and price < min_price:
+                    continue
+                if max_price is not None and price > max_price:
+                    continue
+                
                 # 提取并处理数据
                 order_data = {
                     '订单号': row['订单号'],
@@ -30,7 +52,8 @@ def process_excel_file(file_path: str) -> pd.DataFrame:
                     '联系电话': clean_phone_number(row['联系电话']),
                     '国家': str(row['国家']),
                     '收货地址': str(row['收货地址']),
-                    '来源文件': os.path.basename(file_path)  # 添加来源文件信息
+                    '价格': price,
+                    '来源文件': os.path.basename(file_path)
                 }
                 
                 processed_data.append(order_data)
@@ -40,6 +63,7 @@ def process_excel_file(file_path: str) -> pd.DataFrame:
                 print(f"收货人名称: {order_data['收货人名称']}")
                 print(f"联系电话: {order_data['联系电话']}")
                 print(f"国家: {order_data['国家']}")
+                print(f"价格: ${order_data['价格']:.2f}")
                 print("-" * 50)
                 
             except Exception as e:
@@ -79,7 +103,8 @@ def save_to_excel(df: pd.DataFrame, output_file: str):
         'C': 20,  # 联系电话
         'D': 10,  # 国家
         'E': 40,  # 收货地址
-        'F': 20,  # 来源文件
+        'F': 10,  # 价格
+        'G': 20,  # 来源文件
     }
     
     # 设置每列的宽度和对齐方式
@@ -105,10 +130,14 @@ def main():
         
     print(f"找到 {len(excel_files)} 个.xls文件")
     
+    # 设置价格过滤范围（可以根据需要修改）
+    min_price = None  # 最低价格，设置为None表示不限制
+    max_price = None  # 最高价格，设置为None表示不限制
+    
     # 处理所有文件并合并结果
     all_data = []
     for file_path in excel_files:
-        df = process_excel_file(file_path)
+        df = process_excel_file(file_path, min_price, max_price)
         if not df.empty:
             all_data.append(df)
     
@@ -122,9 +151,12 @@ def main():
     # 根据联系电话去重，保留最后一次出现的记录
     result_df = result_df.drop_duplicates(subset=['联系电话'], keep='last')
     
+    # 按价格降序排序
+    result_df = result_df.sort_values(by='价格', ascending=False)
+    
     # 生成带时间戳的输出文件名
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    output_file = f'processed_orders_{timestamp}.xlsx'  # 注意这里改成了.xlsx
+    output_file = f'processed_orders_{timestamp}.xlsx'
     
     # 保存到Excel文件
     save_to_excel(result_df, output_file)
@@ -133,6 +165,13 @@ def main():
     print(f"处理的文件数: {len(excel_files)}")
     print(f"总记录数: {len(pd.concat(all_data, ignore_index=True))}")
     print(f"去重后记录数: {len(result_df)}")
+    
+    # 打印价格统计信息
+    if not result_df.empty:
+        print("\n价格统计信息:")
+        print(f"最低价格: ${result_df['价格'].min():.2f}")
+        print(f"最高价格: ${result_df['价格'].max():.2f}")
+        print(f"平均价格: ${result_df['价格'].mean():.2f}")
 
 if __name__ == '__main__':
     main()
