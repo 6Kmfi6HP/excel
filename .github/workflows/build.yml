@@ -1,0 +1,79 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'  # Push events to matching v*, i.e. v1.0, v20.15.10
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.9']
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --name excel_processor main.py
+
+    - name: Rename binary for platform
+      run: |
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          mv dist/excel_processor.exe dist/excel_processor_windows.exe
+        elif [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+          mv dist/excel_processor dist/excel_processor_linux
+        else
+          mv dist/excel_processor dist/excel_processor_macos
+        fi
+      shell: bash
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: excel_processor_${{ matrix.os }}
+        path: |
+          dist/excel_processor_*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v2
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        name: Release ${{ github.ref_name }}
+        draft: false
+        prerelease: false
+        files: |
+          excel_processor_windows-latest/excel_processor_windows.exe
+          excel_processor_ubuntu-latest/excel_processor_linux
+          excel_processor_macos-latest/excel_processor_macos
