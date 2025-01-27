@@ -26,6 +26,66 @@ def extract_price(product_info: str) -> float:
     except Exception:
         return 0.0
 
+def parse_product_info(info: str) -> list:
+    """解析产品信息字符串，提取所有产品的信息"""
+    products = []
+    current_product = None
+    
+    if not info or not isinstance(info, str):
+        return products
+        
+    lines = info.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        if line.startswith('【') and '】' in line:
+            # 如果有之前的产品信息，保存它
+            if current_product:
+                products.append(current_product)
+            
+            # 开始新的产品
+            parts = line.split('】', 1)
+            number = parts[0].replace('【', '')
+            name = parts[1].strip()
+            current_product = {
+                '产品序号': number,
+                '产品名称': name,
+                '产品属性': '',
+                '产品编号': ''
+            }
+        elif current_product:
+            if '属性：' in line:
+                # 提取属性，去除"中国"
+                attrs = line.split('属性：', 1)[1].strip()
+                attrs_list = [attr.strip() for attr in attrs.split('、')]
+                # 过滤掉"中国"，并按特定顺序整理属性（box状态和颜色）
+                filtered_attrs = []
+                box_status = next((attr for attr in attrs_list if 'box' in attr.lower()), '')
+                color = next((attr for attr in attrs_list if attr not in ['中国', box_status] and attr), '')
+                if box_status:
+                    filtered_attrs.append(box_status)
+                if color:
+                    filtered_attrs.append(color)
+                current_product['产品属性'] = '、'.join(filtered_attrs) if filtered_attrs else ''
+            elif '产品编号：' in line:
+                current_product['产品编号'] = line.split('产品编号：', 1)[1].strip()
+    
+    # 添加最后一个产品
+    if current_product:
+        products.append(current_product)
+    
+    # 为每个产品组合最终的显示名称
+    for product in products:
+        final_name = f"{product['产品名称']}"
+        if product['产品属性']:
+            final_name += f" ({product['产品属性']})"
+        product['产品名称'] = final_name
+    
+    return products
+
 def process_excel_file(file_path: str, min_price: float = None, max_price: float = None) -> pd.DataFrame:
     """处理单个Excel文件"""
     print(f"\n处理文件: {file_path}")
@@ -39,42 +99,61 @@ def process_excel_file(file_path: str, min_price: float = None, max_price: float
                 product_info = str(row.get('产品信息', ''))
                 price = extract_price(product_info)
                 
+                # 解析所有产品信息
+                products = parse_product_info(product_info)
+                
+                # 优先使用产品总计金额，如果找不到则使用订单总额
+                total_amount = 0.0
+                if pd.notna(row.get('产品总计金额 (US $)')):
+                    total_amount = float(str(row.get('产品总计金额 (US $)', '0')).replace(',', ''))
+                elif pd.notna(row.get('订单总额 (US $)')):
+                    total_amount = float(str(row.get('订单总额 (US $)', '0')).replace(',', ''))
+                
                 # 如果设置了价格过滤条件，检查是否符合条件
                 if min_price is not None and price < min_price:
                     continue
                 if max_price is not None and price > max_price:
                     continue
                 
-                # 提取并处理数据
-                order_data = {
-                    '订单号': row['订单号'],
-                    '收货人名称': str(row['收货人名称']),
-                    '联系电话': clean_phone_number(row['联系电话']),
-                    '国家': str(row['国家']),
-                    '收货地址': str(row['收货地址']),
-                    '价格': price,
-                    '来源文件': os.path.basename(file_path)
-                }
-                
-                processed_data.append(order_data)
-                
-                # 打印处理信息
-                print(f"订单号: {order_data['订单号']}")
-                print(f"收货人名称: {order_data['收货人名称']}")
-                print(f"联系电话: {order_data['联系电话']}")
-                print(f"国家: {order_data['国家']}")
-                print(f"价格: ${order_data['价格']:.2f}")
-                print("-" * 50)
+                # 为每个产品创建一条记录
+                for product in products:
+                    order_data = {
+                        '订单号': row['订单号'],
+                        '收货人名称': str(row['收货人名称']),
+                        '联系电话': clean_phone_number(row['联系电话']),
+                        '国家': str(row['国家']),
+                        '收货地址': str(row['收货地址']),
+                        '价格': price,
+                        '产品总计金额': total_amount,
+                        '产品名称': product['产品名称'],
+                        '产品序号': product['产品序号']
+                    }
+                    processed_data.append(order_data)
+                    
+                    # 打印处理信息
+                    print(f"订单号: {order_data['订单号']}")
+                    print(f"收货人名称: {order_data['收货人名称']}")
+                    print(f"联系电话: {order_data['联系电话']}")
+                    print(f"国家: {order_data['国家']}")
+                    print(f"价格: ${order_data['价格']:.2f}")
+                    print(f"产品总计金额: ${order_data['产品总计金额']:.2f}")
+                    print(f"产品名称: {order_data['产品名称']}")
+                    print(f"产品序号: {order_data['产品序号']}")
+                    print(f"文件来源: {file_path}")
+                    print("-" * 50)
                 
             except Exception as e:
                 print(f"处理第 {index} 行时出错: {str(e)}")
                 continue
                 
-        return pd.DataFrame(processed_data)
+        # 按产品总计金额降序排序
+        df_result = pd.DataFrame(processed_data)
+        df_result = df_result.sort_values(by='产品总计金额', ascending=False)
+        return df_result
         
     except Exception as e:
-        print(f"处理文件 {file_path} 时出错: {str(e)}")
-        return pd.DataFrame()  # 返回空DataFrame
+        print(f"处理文件时出错: {str(e)}")
+        return pd.DataFrame()
 
 def find_excel_files(directory: str) -> list:
     """递归查找目录下所有的xls文件，排除processed_orders开头的文件"""
@@ -88,34 +167,40 @@ def find_excel_files(directory: str) -> list:
 
 def save_to_excel(df: pd.DataFrame, output_file: str):
     """保存数据到Excel文件，设置单元格格式"""
-    # 将DataFrame保存为Excel文件
-    writer = pd.ExcelWriter(output_file, engine='openpyxl')
-    df.to_excel(writer, index=False, sheet_name='订单数据')
-    
-    # 获取工作簿对象
-    workbook = writer.book
-    worksheet = workbook.active
-    
-    # 设置列宽和对齐方式
-    column_widths = {
-        'A': 20,  # 订单号
-        'B': 15,  # 收货人名称
-        'C': 20,  # 联系电话
-        'D': 10,  # 国家
-        'E': 40,  # 收货地址
-        'F': 10,  # 价格
-        'G': 20,  # 来源文件
-    }
-    
-    # 设置每列的宽度和对齐方式
-    for col_letter, width in column_widths.items():
-        worksheet.column_dimensions[col_letter].width = width
-        # 设置居中对齐
-        for cell in worksheet[col_letter]:
-            cell.alignment = Alignment(horizontal='center', vertical='center')
-    
-    # 保存文件
-    writer.close()
+    try:
+        # 创建一个ExcelWriter对象
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # 将数据写入Excel
+            df.to_excel(writer, index=False, sheet_name='订单数据')
+            
+            # 获取工作表对象
+            worksheet = writer.sheets['订单数据']
+            
+            # 设置列宽
+            column_widths = {
+                'A': 15,  # 订单号
+                'B': 15,  # 收货人名称
+                'C': 15,  # 联系电话
+                'D': 10,  # 国家
+                'E': 40,  # 收货地址
+                'F': 10,  # 价格
+                'G': 15,  # 产品总计金额
+                'H': 40,  # 产品名称
+                'I': 15,  # 销售数量
+                'J': 20,  # 来源文件
+            }
+            
+            # 设置每列的宽度和对齐方式
+            for col_letter, width in column_widths.items():
+                worksheet.column_dimensions[col_letter].width = width
+                # 设置居中对齐
+                for cell in worksheet[col_letter]:
+                    cell.alignment = Alignment(horizontal='center', vertical='center')
+            
+            # 文件会在with语句结束时自动保存和关闭
+            
+    except Exception as e:
+        print(f"保存文件时出错: {str(e)}")
 
 def main():
     # 获取当前目录
